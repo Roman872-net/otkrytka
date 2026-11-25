@@ -1,0 +1,243 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Для тебя</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@500;700&family=Marck+Script&display=swap" rel="stylesheet">
+<style>
+/* VOICE: тихо и нежно, как записка, которую оставили на столе ночью
+   IDEA: письмо, которое сжигают, а из пепла вырастает роза
+   PICTURE: весь экран — живой ASCII-холст: конверт, огонь, искры, роза
+   COLOUR and TYPE: чёрная ночь, персиковый конверт, алая роза, зелёный стебель; моно JetBrains Mono, подпись Marck Script
+   LAYOUT: одна сцена на весь экран, подсказка и подпись внизу, кнопка «ещё раз» */
+:root{color-scheme:dark;--bg:#050507;--ink:#f3e6dc;--soft:#a88f80;--rose:#ff5a6e}
+*{box-sizing:border-box;min-width:0}
+html,body{margin:0;height:100%;background:var(--bg);color:var(--ink);overflow:hidden;
+  font:16px/1.5 "JetBrains Mono",ui-monospace,monospace;-webkit-tap-highlight-color:transparent}
+canvas{position:fixed;inset:0;width:100%;height:100%;display:block;touch-action:manipulation;cursor:pointer}
+.ui{position:fixed;left:0;right:0;bottom:max(24px,env(safe-area-inset-bottom));display:grid;justify-items:center;gap:14px;
+  padding:0 20px;pointer-events:none;text-align:center}
+.hint{font-size:14px;color:var(--soft);letter-spacing:.02em;animation:pulse 2.4s ease-in-out infinite;transition:opacity .6s}
+.msg{font:clamp(30px,8vw,48px)/1.1 "Marck Script",cursive;color:var(--ink);opacity:0;transform:translateY(10px);
+  transition:opacity 1.6s ease,transform 1.6s ease;text-wrap:balance;text-shadow:0 0 18px rgba(255,90,110,.35)}
+.msg.on{opacity:1;transform:none}
+.again{pointer-events:auto;min-height:44px;padding:10px 20px;border-radius:22px;border:1px solid #3a2a2a;background:#120c0d;
+  color:var(--soft);font:14px "JetBrains Mono",monospace;opacity:0;transition:opacity 1s;visibility:hidden;cursor:pointer}
+.again.on{opacity:1;visibility:visible}
+.again:focus-visible{outline:2px solid var(--rose);outline-offset:3px}
+.hide{opacity:0!important;animation:none}
+@keyframes pulse{50%{opacity:.45}}
+@media(prefers-reduced-motion:reduce){.hint{animation:none}}
+</style>
+</head>
+<body>
+<canvas id="c" aria-label="Конверт из символов. Коснитесь, чтобы открыть"></canvas>
+<div class="ui">
+  <div class="msg" id="msg">Сладость, это для тебя. С любовью</div>
+  <div class="hint" id="hint">коснись конверта</div>
+  <button class="again" id="again" type="button">ещё раз</button>
+</div>
+<script>
+{
+// ===== Тексты открытки =====
+const LABEL = 'ДЛЯ СЛАДОСТИ';
+
+const cv = document.getElementById('c'), cx = cv.getContext('2d');
+const hint = document.getElementById('hint'), msg = document.getElementById('msg'), again = document.getElementById('again');
+const RM = matchMedia('(prefers-reduced-motion: reduce)').matches;
+const RAMP = ' .\'`:-=+*%#&@';
+let W, H, DPR, F, CW, CH, cols, rows, env, rose, th, sparks = [], streaks = [];
+let phase = 'idle', t0 = 0, sound = null, heart = {x:0, y:0}, label = {s:'', x:0, y:0};
+
+const rnd = (a, b) => a + Math.random() * (b - a);
+const clamp = (v, a = 0, b = 1) => Math.max(a, Math.min(b, v));
+const hash = (x, y) => { const s = Math.sin(x * 127.1 + y * 311.7) * 43758.5453; return s - Math.floor(s); };
+
+// ---- рисуем сцены в маленький холст и считываем по клеткам ----
+function sample(draw) {
+  const o = document.createElement('canvas'); o.width = cols; o.height = rows;
+  const g = o.getContext('2d'); g.save(); g.scale(1, CW / CH); draw(g, cols, rows * CH / CW); g.restore();
+  return g.getImageData(0, 0, cols, rows).data;
+}
+function drawEnvelope(g, w, h) {
+  const ew = Math.min(w * .86, h * .8), eh = ew * .64, x = (w - ew) / 2, y = (h - eh) / 2 - h * .04;
+  g.fillStyle = '#e8a37b'; g.fillRect(x, y, ew, eh);
+  g.strokeStyle = '#3a1a10'; g.lineWidth = Math.max(1.2, ew * .02);
+  g.beginPath(); g.moveTo(x, y); g.lineTo(x + ew / 2, y + eh * .52); g.lineTo(x + ew, y); g.stroke();
+  g.beginPath(); g.moveTo(x, y + eh); g.lineTo(x + ew * .38, y + eh * .45); g.moveTo(x + ew, y + eh); g.lineTo(x + ew * .62, y + eh * .45); g.stroke();
+  g.strokeStyle = '#f6c8a8'; g.lineWidth = Math.max(1, ew * .012); g.strokeRect(x, y, ew, eh);
+  const lab = ' ' + [...LABEL].join(' ') + ' ', lw = lab.length;
+  g.fillStyle = '#120604'; g.fillRect(x + ew / 2 - lw / 2 - 1, y + eh * .8 - 1.6, lw + 2, 3.2);
+  label = {s: lab, x: Math.round(x + ew / 2 - lw / 2), y: Math.round((y + eh * .8) * CW / CH)};
+  const hx = x + ew / 2, hy = y + eh * .5, r = ew * .07;
+  heart = {x: hx / w, y: hy / h, r: r / w, bottom: (y + eh) / h};
+  g.fillStyle = '#ff6fb0'; heartPath(g, hx, hy, r); g.fill();
+  g.fillStyle = '#ffc1e0'; g.beginPath(); g.arc(hx - r * .35, hy - r * .25, r * .22, 0, 7); g.fill();
+}
+function heartPath(g, x, y, r) {
+  g.beginPath(); g.moveTo(x, y + r * .9);
+  g.bezierCurveTo(x - r * 1.6, y - r * .2, x - r * .7, y - r * 1.3, x, y - r * .4);
+  g.bezierCurveTo(x + r * .7, y - r * 1.3, x + r * 1.6, y - r * .2, x, y + r * .9); g.closePath();
+}
+function drawRose(g, w, h) {
+  const s = Math.min(w, h * .82), cx = w / 2, cy = h * .3, R = s * .22;
+  g.lineCap = 'round';
+  g.strokeStyle = '#3f9a52'; g.lineWidth = Math.max(1.5, s * .025);
+  g.beginPath(); g.moveTo(cx, cy + R * .7); g.bezierCurveTo(cx + R * .25, cy + R * 2, cx - R * .3, cy + R * 2.8, cx + R * .05, cy + R * 3.2); g.stroke();
+  for (const [lx, ly, a, k] of [[cx - R * .1, cy + R * 1.8, -2.5, 1], [cx + R * .1, cy + R * 2.6, -.5, .9], [cx - R * .05, cy + R * 2.9, -2.7, .7]]) {
+    g.save(); g.translate(lx, ly); g.rotate(a);
+    const lg = g.createLinearGradient(0, 0, R * k, 0); lg.addColorStop(0, '#2d7a3e'); lg.addColorStop(1, '#8be08f');
+    g.fillStyle = lg; g.beginPath(); g.ellipse(R * .5 * k, 0, R * .55 * k, R * .2 * k, 0, 0, 7); g.fill();
+    g.strokeStyle = '#1d4d27'; g.lineWidth = 1; g.beginPath(); g.moveTo(0, 0); g.lineTo(R * k, 0); g.stroke(); g.restore();
+  }
+  g.fillStyle = '#2f7d3f';
+  for (const a of [-.9, .9, 0]) { g.save(); g.translate(cx, cy + R * .65); g.rotate(a); g.beginPath(); g.ellipse(0, R * .15, R * .14, R * .38, 0, 0, 7); g.fill(); g.restore(); }
+  const petal = (px, py, rx, ry, a, c1, c2) => {
+    g.save(); g.translate(px, py); g.rotate(a);
+    const rg = g.createRadialGradient(0, -ry * .3, 1, 0, 0, Math.max(rx, ry));
+    rg.addColorStop(0, c1); rg.addColorStop(1, c2); g.fillStyle = rg;
+    g.beginPath(); g.ellipse(0, 0, rx, ry, 0, 0, 7); g.fill();
+    g.strokeStyle = '#2a0008'; g.lineWidth = Math.max(1, R * .09); g.stroke(); g.restore();
+  };
+  petal(cx - R * .55, cy + R * .1, R * .55, R * .75, -.5, '#ff6a78', '#a3102a');
+  petal(cx + R * .55, cy + R * .1, R * .55, R * .75, .5, '#ff6a78', '#a3102a');
+  petal(cx, cy + R * .25, R * .8, R * .55, 0, '#ff8090', '#b3142e');
+  petal(cx - R * .25, cy - R * .25, R * .45, R * .55, -.3, '#ff9aa6', '#c21a36');
+  petal(cx + R * .25, cy - R * .25, R * .45, R * .55, .3, '#ff9aa6', '#c21a36');
+  petal(cx, cy - R * .3, R * .32, R * .42, 0, '#ffb3bc', '#d0203c');
+  g.strokeStyle = '#5a0816'; g.lineWidth = Math.max(1, R * .06);
+  g.beginPath(); for (let a = 0; a < 9; a += .2) { const r = R * .03 * a; g.lineTo(cx + Math.cos(a * 1.4) * r, cy - R * .35 + Math.sin(a * 1.4) * r * .7); } g.stroke();
+}
+
+function layout() {
+  DPR = Math.min(2, devicePixelRatio || 1); W = innerWidth; H = innerHeight;
+  cv.width = W * DPR; cv.height = H * DPR; cx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  F = clamp(Math.min(W / (58 * .6), H / 72), 8, 16); CW = F * .6; CH = F * 1.02;
+  cols = Math.ceil(W / CW); rows = Math.ceil(H / CH);
+  env = sample(drawEnvelope); rose = sample(drawRose);
+  th = new Float32Array(cols * rows);
+  for (let y = 0; y < rows; y++) for (let x = 0; x < cols; x++)
+    th[y * cols + x] = (1 - y / rows) * .9 + hash(x, y) * .07 + Math.sin(x * .35) * .03 + Math.sin(x * .13 + 2) * .04;
+  cx.font = `500 ${F}px "JetBrains Mono",ui-monospace,monospace`; cx.textBaseline = 'top';
+}
+
+function cell(data, i) { const k = i * 4; return [data[k], data[k + 1], data[k + 2], data[k + 3]]; }
+function put(x, y, ch, r, g, b, a) {
+  if (a <= .02 || ch === ' ') return;
+  cx.fillStyle = `rgba(${r|0},${g|0},${b|0},${a})`; cx.fillText(ch, x * CW, y * CH);
+}
+function glyph(r, g, b, a, i, t) {
+  const l = (Math.max(r, g, b) * .75 + (r * .3 + g * .59 + b * .11) * .25) / 255 * (a / 255);
+  const j = clamp(Math.round(l * (RAMP.length - 1) + (hash(i, Math.floor(t * 2)) - .5) * 1.2), 1, RAMP.length - 1);
+  return RAMP[j];
+}
+
+function frame(now) {
+  const t = now / 1000;
+  cx.clearRect(0, 0, W, H);
+  const el = phase === 'idle' ? 0 : (now - t0) / 1000 * (RM ? 2.5 : 1);
+  const DRIP = 1.4, BURN = 4.2;
+  const burn = el < DRIP ? -1 : (el - DRIP) / BURN * 1.15;
+  const reveal = clamp((el - DRIP - 1.2) / 3.5);
+  const hx = Math.floor(heart.x * cols), hy = Math.floor(heart.y * rows), hb = Math.floor(heart.bottom * rows);
+  const dripLen = phase === 'idle' ? 0 : clamp(el / DRIP) * (hb - hy);
+  const pulse = phase === 'idle' ? .75 + .25 * Math.sin(t * 3) : 1;
+
+  for (let y = 0; y < rows; y++) for (let x = 0; x < cols; x++) {
+    const i = y * cols + x, p = th[i];
+    const [er, eg, eb, ea] = cell(env, i);
+    if (burn < p) {
+      if (ea < 20) continue;
+      if (y === label.y && x >= label.x && x < label.x + label.s.length) { const c = label.s[x - label.x]; if (c !== ' ') put(x, y, c, 255, 240, 225, 1); continue; }
+      let k = 1; if (Math.abs(x - hx) < 4 && Math.abs(y - hy) < 3) k = pulse;
+      const dx = Math.abs(x - hx - (y % 3 === 0 ? 0 : 0)); if (dx <= 1 && y > hy && y - hy < dripLen - dx * 2) { put(x, y, dx ? ':' : '█', 170, 110, 255, dx ? .7 : 1); continue; }
+      put(x, y, glyph(er, eg, eb, ea, i, t), er, eg, eb, k * (.65 + hash(x, y) * .35));
+    } else if (burn < p + .05) {
+      const h = hash(x + Math.floor(t * 12), y);
+      put(x, y, '^*\'"~'[Math.floor(h * 5)], 255, 120 + h * 130, 40 * h, .95);
+      if (ea > 20 && Math.random() < .05) sparks.push({x: x * CW, y: y * CH, vx: rnd(-20, 20), vy: rnd(-140, -50), life: rnd(.6, 1.8), age: 0, smoke: Math.random() < .3});
+    } else if (burn < p + .12 && ea > 20) {
+      put(x, y, '.,:'[Math.floor(hash(x, y) * 3)], 120, 40, 20, .8 * (1 - (burn - p - .05) / .07));
+    }
+    if (reveal > 0 && burn >= p + .05) {
+      const [rr, rg, rb, ra] = cell(rose, i);
+      if (ra > 15) {
+        const tw = .85 + .15 * Math.sin(t * 2 + x * .3 + y * .2);
+        put(x, y, glyph(rr, rg, rb, ra, i, t), Math.min(255, rr * 1.15), Math.min(255, rg * 1.15), Math.min(255, rb * 1.15), reveal * tw * (ra / 255));
+      } else if (reveal > .3 && hash(x, y + 9) > .997) put(x, y, '·', 255, 230, 200, (reveal - .3) * (.5 + .5 * Math.sin(t * 3 + x)));
+    }
+  }
+
+  if (reveal > .4) {
+    if (streaks.length < 7 && Math.random() < .05) streaks.push({y: Math.floor(rnd(.12, .55) * rows), x: Math.random() < .5 ? -10 : cols + 10, d: 0, len: Math.floor(rnd(6, 18)), v: rnd(10, 26)});
+    streaks.forEach(s => {
+      s.d += s.v / 60; const dir = s.x < 0 ? 1 : -1;
+      for (let k = 0; k < s.len; k++) {
+        const x = Math.floor(s.x + dir * (s.d - k));
+        if (x >= 0 && x < cols) put(x, s.y, k === 0 ? '◆' : k < 3 ? '=' : '-', 90, 150, 255, (1 - k / s.len) * (reveal - .4) * 1.4);
+      }
+    });
+    streaks = streaks.filter(s => s.d - s.len < cols + 20);
+  }
+
+  const dt = 1 / 60;
+  sparks.forEach(s => {
+    s.age += dt; s.x += s.vx * dt; s.y += s.vy * dt; s.vx += rnd(-30, 30) * dt;
+    const a = clamp(1 - s.age / s.life);
+    if (s.smoke) put(Math.floor(s.x / CW), Math.floor(s.y / CH), '°o.'[Math.floor(s.age * 3) % 3], 120, 110, 110, a * .5);
+    else put(Math.floor(s.x / CW), Math.floor(s.y / CH), '*+.\''[Math.floor(s.age * 6) % 4], 255, 170 + 80 * a, 60 * a, a);
+  });
+  sparks = sparks.filter(s => s.age < s.life);
+  if (sparks.length > 1600) sparks.splice(0, sparks.length - 1600);
+
+  if (phase === 'run' && reveal >= 1) { phase = 'done'; msg.classList.add('on'); again.classList.add('on'); chime(); }
+  requestAnimationFrame(frame);
+}
+
+// ---- звук: треск огня и тихий аккорд ----
+function crackle() {
+  try {
+    const A = new (window.AudioContext || window.webkitAudioContext)(); sound = A;
+    const n = A.sampleRate * 6, buf = A.createBuffer(1, n, A.sampleRate), d = buf.getChannelData(0);
+    for (let i = 0; i < n; i++) { const env = Math.min(1, i / (A.sampleRate * 1.5)) * Math.min(1, (n - i) / (A.sampleRate * 1.5));
+      d[i] = (Math.random() * 2 - 1) * .05 * env + (Math.random() < .0009 ? (Math.random() * 2 - 1) * .9 * env : 0); }
+    const src = A.createBufferSource(); src.buffer = buf;
+    const f = A.createBiquadFilter(); f.type = 'bandpass'; f.frequency.value = 1800; f.Q.value = .6;
+    const g = A.createGain(); g.gain.value = .8;
+    src.connect(f).connect(g).connect(A.destination); src.start(A.currentTime + (RM ? .5 : 1.3));
+  } catch (e) { sound = null; }
+}
+function chime() {
+  if (!sound) return;
+  try {
+    const A = sound, now = A.currentTime;
+    [523.25, 659.25, 783.99, 1046.5].forEach((fr, k) => {
+      const o = A.createOscillator(), g = A.createGain(); o.type = 'sine'; o.frequency.value = fr;
+      g.gain.setValueAtTime(0, now + k * .18); g.gain.linearRampToValueAtTime(.08, now + k * .18 + .05);
+      g.gain.exponentialRampToValueAtTime(.0001, now + k * .18 + 2.6);
+      o.connect(g).connect(A.destination); o.start(now + k * .18); o.stop(now + k * .18 + 2.8);
+    });
+  } catch (e) {}
+}
+
+function start() {
+  if (phase !== 'idle') return;
+  phase = 'run'; t0 = performance.now(); hint.classList.add('hide'); crackle();
+}
+function reset() {
+  phase = 'idle'; sparks = []; streaks = []; msg.classList.remove('on'); again.classList.remove('on'); hint.classList.remove('hide');
+  if (sound) { try { sound.close(); } catch (e) {} sound = null; }
+}
+cv.addEventListener('pointerup', start);
+addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { if (phase === 'done') reset(); else start(); } });
+again.addEventListener('click', e => { e.stopPropagation(); reset(); });
+let rt; addEventListener('resize', () => { clearTimeout(rt); rt = setTimeout(layout, 120); });
+
+(document.fonts ? document.fonts.load(`500 14px "JetBrains Mono"`).catch(() => {}) : Promise.resolve())
+  .then(() => { layout(); requestAnimationFrame(frame); });
+}
+</script>
+</body>
+</html>
